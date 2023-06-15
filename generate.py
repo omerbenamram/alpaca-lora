@@ -27,14 +27,12 @@ def main(
     load_8bit: bool = False,
     base_model: str = "",
     lora_weights: str = "tloen/alpaca-lora-7b",
-    prompt_template: str = "",  # The prompt template to use, will default to alpaca.
+    prompt_template: str = "hi",  # The prompt template to use, will default to alpaca.
     server_name: str = "0.0.0.0",  # Allows to listen on all interfaces by providing '0.
     share_gradio: bool = False,
 ):
     base_model = base_model or os.environ.get("BASE_MODEL", "")
-    assert (
-        base_model
-    ), "Please specify a --base_model, e.g. --base_model='huggyllama/llama-7b'"
+    assert base_model, "Please specify a --base_model, e.g. --base_model='huggyllama/llama-7b'"
 
     prompter = Prompter(prompt_template)
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
@@ -48,7 +46,7 @@ def main(
         model = PeftModel.from_pretrained(
             model,
             lora_weights,
-            torch_dtype=torch.float16,
+            # torch_dtype=torch.float16,
         )
     elif device == "mps":
         model = LlamaForCausalLM.from_pretrained(
@@ -63,9 +61,7 @@ def main(
             torch_dtype=torch.float16,
         )
     else:
-        model = LlamaForCausalLM.from_pretrained(
-            base_model, device_map={"": device}, low_cpu_mem_usage=True
-        )
+        model = LlamaForCausalLM.from_pretrained(base_model, device_map={"": device}, low_cpu_mem_usage=True)
         model = PeftModel.from_pretrained(
             model,
             lora_weights,
@@ -85,7 +81,8 @@ def main(
         model = torch.compile(model)
 
     def evaluate(
-        instruction,
+        summary=None,
+        tone=None,
         input=None,
         temperature=0.1,
         top_p=0.75,
@@ -95,7 +92,14 @@ def main(
         stream_output=False,
         **kwargs,
     ):
-        prompt = prompter.generate_prompt(instruction, input)
+        summary = summary or ""
+        prompt = f"Summary: {summary}\n\n"
+        if tone is not None:
+            prompt += f"Tone: The tone of the conversation is {tone}.\n\n"
+
+        prompt += "###\n\n"
+        prompt += f"Brady:{input}"
+        prompt = prompter.generate_prompt(prompt)
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(device)
         generation_config = GenerationConfig(
@@ -114,35 +118,32 @@ def main(
             "max_new_tokens": max_new_tokens,
         }
 
+        print(f"Generating with {generate_params}")
+
         if stream_output:
             # Stream the reply 1 token at a time.
             # This is based on the trick of using 'stopping_criteria' to create an iterator,
             # from https://github.com/oobabooga/text-generation-webui/blob/ad37f396fc8bcbab90e11ecf17c56c97bfbd4a9c/modules/text_generation.py#L216-L243.
 
             def generate_with_callback(callback=None, **kwargs):
-                kwargs.setdefault(
-                    "stopping_criteria", transformers.StoppingCriteriaList()
-                )
-                kwargs["stopping_criteria"].append(
-                    Stream(callback_func=callback)
-                )
+                kwargs.setdefault("stopping_criteria", transformers.StoppingCriteriaList())
+                kwargs["stopping_criteria"].append(Stream(callback_func=callback))
                 with torch.no_grad():
                     model.generate(**kwargs)
 
             def generate_with_streaming(**kwargs):
-                return Iteratorize(
-                    generate_with_callback, kwargs, callback=None
-                )
+                return Iteratorize(generate_with_callback, kwargs, callback=None)
 
             with generate_with_streaming(**generate_params) as generator:
                 for output in generator:
                     # new_tokens = len(output) - len(input_ids[0])
                     decoded_output = tokenizer.decode(output)
 
-                    if output[-1] in [tokenizer.eos_token_id]:
-                        break
+                    # if output[-1] in [tokenizer.eos_token_id]:
+                    #     break
 
-                    yield prompter.get_response(decoded_output)
+                    # yield decoded_output.split("\n\n===\n\nGrey: ")[1].strip()
+                    yield decoded_output
             return  # early return for stream_output
 
         # Without streaming
@@ -154,34 +155,32 @@ def main(
                 output_scores=True,
                 max_new_tokens=max_new_tokens,
             )
+            print(generation_output)
         s = generation_output.sequences[0]
         output = tokenizer.decode(s)
-        yield prompter.get_response(output)
+        yield output
 
     gr.Interface(
         fn=evaluate,
         inputs=[
             gr.components.Textbox(
                 lines=2,
-                label="Instruction",
-                placeholder="Tell me about alpacas.",
+                label="Summary",
+                placeholder='Grey and Brady discuss their experiences of watching movies, specifically focusing on their recent experiences of watching "Everest" and "The Martian" in theaters.',
             ),
-            gr.components.Textbox(lines=2, label="Input", placeholder="none"),
-            gr.components.Slider(
-                minimum=0, maximum=1, value=0.1, label="Temperature"
+            gr.components.Textbox(
+                lines=1,
+                label="Tone",
+                placeholder="reflective and analytical",
             ),
-            gr.components.Slider(
-                minimum=0, maximum=1, value=0.75, label="Top p"
+            gr.components.Textbox(
+                lines=2, label="Brady", placeholder="I watched Everest in 3D and I watched The Martian in 2D"
             ),
-            gr.components.Slider(
-                minimum=0, maximum=100, step=1, value=40, label="Top k"
-            ),
-            gr.components.Slider(
-                minimum=1, maximum=4, step=1, value=4, label="Beams"
-            ),
-            gr.components.Slider(
-                minimum=1, maximum=2000, step=1, value=128, label="Max tokens"
-            ),
+            gr.components.Slider(minimum=0, maximum=1, value=0.1, label="Temperature"),
+            gr.components.Slider(minimum=0, maximum=1, value=0.75, label="Top p"),
+            gr.components.Slider(minimum=0, maximum=100, step=1, value=40, label="Top k"),
+            gr.components.Slider(minimum=1, maximum=4, step=1, value=4, label="Beams"),
+            gr.components.Slider(minimum=1, maximum=2000, step=1, value=128, label="Max tokens"),
             gr.components.Checkbox(label="Stream output"),
         ],
         outputs=[

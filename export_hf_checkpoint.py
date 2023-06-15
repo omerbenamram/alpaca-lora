@@ -1,14 +1,21 @@
 import os
+import argparse
 
 import torch
 import transformers
 from peft import PeftModel
 from transformers import LlamaForCausalLM, LlamaTokenizer  # noqa: F402
 
-BASE_MODEL = os.environ.get("BASE_MODEL", None)
-assert (
-    BASE_MODEL
-), "Please specify a value for BASE_MODEL environment variable, e.g. `export BASE_MODEL=huggyllama/llama-7b`"  # noqa: E501
+parser = argparse.ArgumentParser(description="Script for manipulating base and lora models.")
+parser.add_argument("--base_model", type=str, required=True, help="Base model name or path.")
+parser.add_argument("--lora_weights", type=str, required=True, help="LoRa weights name or path.")
+parser.add_argument("--output_dir", type=str, required=True, help="Output directory for the new merged model.")
+
+args = parser.parse_args()
+
+BASE_MODEL = args.base_model
+LORA_WEIGHTS = args.lora_weights
+OUTPUT_DIR = args.output_dir
 
 tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL)
 
@@ -24,14 +31,12 @@ first_weight_old = first_weight.clone()
 
 lora_model = PeftModel.from_pretrained(
     base_model,
-    "tloen/alpaca-lora-7b",
-    device_map={"": "cpu"},
-    torch_dtype=torch.float16,
+    LORA_WEIGHTS,
+    # device_map={"": "cpu"},
+    # torch_dtype=torch.float16,
 )
 
-lora_weight = lora_model.base_model.model.model.layers[
-    0
-].self_attn.q_proj.weight
+lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
 
 assert torch.allclose(first_weight_old, first_weight)
 
@@ -44,12 +49,6 @@ lora_model.train(False)
 assert not torch.allclose(first_weight_old, first_weight)
 
 lora_model_sd = lora_model.state_dict()
-deloreanized_sd = {
-    k.replace("base_model.model.", ""): v
-    for k, v in lora_model_sd.items()
-    if "lora" not in k
-}
+deloreanized_sd = {k.replace("base_model.model.", ""): v for k, v in lora_model_sd.items() if "lora" not in k}
 
-LlamaForCausalLM.save_pretrained(
-    base_model, "./hf_ckpt", state_dict=deloreanized_sd, max_shard_size="400MB"
-)
+LlamaForCausalLM.save_pretrained(base_model, OUTPUT_DIR, state_dict=deloreanized_sd, max_shard_size="400MB")
