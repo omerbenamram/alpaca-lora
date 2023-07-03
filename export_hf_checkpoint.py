@@ -3,7 +3,7 @@ import argparse
 
 import torch
 import transformers
-from peft import PeftModel
+from peft import PeftModel, PeftModelForCausalLM
 from transformers import LlamaForCausalLM, LlamaTokenizer  # noqa: F402
 
 parser = argparse.ArgumentParser(description="Script for manipulating base and lora models.")
@@ -23,13 +23,13 @@ base_model = LlamaForCausalLM.from_pretrained(
     BASE_MODEL,
     load_in_8bit=False,
     torch_dtype=torch.float16,
-    device_map={"": "cpu"},
+    # device_map={"": "cpu"},
 )
 
 first_weight = base_model.model.layers[0].self_attn.q_proj.weight
 first_weight_old = first_weight.clone()
 
-lora_model = PeftModel.from_pretrained(
+lora_model = PeftModelForCausalLM.from_pretrained(
     base_model,
     LORA_WEIGHTS,
     # device_map={"": "cpu"},

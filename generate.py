@@ -27,7 +27,7 @@ def main(
     load_8bit: bool = False,
     base_model: str = "",
     lora_weights: str = "tloen/alpaca-lora-7b",
-    prompt_template: str = "hi",  # The prompt template to use, will default to alpaca.
+    prompt_template: str = "hi_detailed",  # The prompt template to use, will default to alpaca.
     server_name: str = "0.0.0.0",  # Allows to listen on all interfaces by providing '0.
     share_gradio: bool = False,
 ):
@@ -89,7 +89,12 @@ def main(
         top_k=40,
         num_beams=4,
         max_new_tokens=128,
+        repetition_penalty=1.0,
+        length_penalty=1.0,
+        sample=False,
         stream_output=False,
+        cache=False,
+        renormalize_logits=False,
         **kwargs,
     ):
         summary = summary or ""
@@ -98,7 +103,7 @@ def main(
             prompt += f"Tone: The tone of the conversation is {tone}.\n\n"
 
         prompt += "###\n\n"
-        prompt += f"Brady:{input}"
+        prompt += f"{input}"
         prompt = prompter.generate_prompt(prompt)
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(device)
@@ -116,6 +121,11 @@ def main(
             "return_dict_in_generate": True,
             "output_scores": True,
             "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+            "length_penalty": length_penalty,
+            "do_sample": sample,
+            "use_cache": cache,
+            "renormalize_logits": renormalize_logits,
         }
 
         print(f"Generating with {generate_params}")
@@ -139,11 +149,10 @@ def main(
                     # new_tokens = len(output) - len(input_ids[0])
                     decoded_output = tokenizer.decode(output)
 
-                    # if output[-1] in [tokenizer.eos_token_id]:
-                    #     break
+                    if output[-1] in [tokenizer.eos_token_id]:
+                        break
 
-                    # yield decoded_output.split("\n\n===\n\nGrey: ")[1].strip()
-                    yield decoded_output
+                    yield prompter.get_response(decoded_output)
             return  # early return for stream_output
 
         # Without streaming
@@ -174,14 +183,25 @@ def main(
                 placeholder="reflective and analytical",
             ),
             gr.components.Textbox(
-                lines=2, label="Brady", placeholder="I watched Everest in 3D and I watched The Martian in 2D"
+                lines=2, label="Brady", placeholder="Brady: I watched Everest in 3D and I watched The Martian in 2D"
             ),
             gr.components.Slider(minimum=0, maximum=1, value=0.1, label="Temperature"),
             gr.components.Slider(minimum=0, maximum=1, value=0.75, label="Top p"),
             gr.components.Slider(minimum=0, maximum=100, step=1, value=40, label="Top k"),
             gr.components.Slider(minimum=1, maximum=4, step=1, value=4, label="Beams"),
             gr.components.Slider(minimum=1, maximum=2000, step=1, value=128, label="Max tokens"),
+            gr.components.Slider(minimum=1.0, maximum=4.0, step=0.1, value=1.0, label="Repetition penalty"),
+            gr.components.Slider(
+                minimum=-1.0,
+                maximum=1.0,
+                step=0.01,
+                value=1.0,
+                label="Length penalty (Since the score is the log likelihood of the sequence (i.e. negative), length_penalty > 0.0 promotes longer sequences, while length_penalty < 0.0 encourages shorter sequences.)",
+            ),
+            gr.components.Checkbox(label="Sample"),
             gr.components.Checkbox(label="Stream output"),
+            gr.components.Checkbox(label="Cache"),
+            gr.components.Checkbox(label="Renormalize logits"),
         ],
         outputs=[
             gr.inputs.Textbox(
